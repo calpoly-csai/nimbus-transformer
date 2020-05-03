@@ -8,8 +8,7 @@ flake8 = "*"
 black = "*"
 
 [packages]
-transformers = "==2.3"
-spacy = "*"
+transformers = "==2.4"
 google = "*"
 beautifulsoup4 = "*"
 torch = "*"
@@ -21,6 +20,11 @@ requests = "*"
 fuzzywuzzy = "*"
 python-levenshtein = "*"
 pandas = "*"
+docopt = "*"
+termcolor = "*"
+colorama = "*"
+ansicolors = "*"
+spacy = "*"
 
 [requires]
 python_version = "3.6"

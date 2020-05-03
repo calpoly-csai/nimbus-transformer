@@ -111,6 +111,7 @@ from ntfp.ntfp_types import (
     URL,
     ExtraDataDict,
 )
+import spacy
 
 
 def create_query(question: Question) -&gt; Query:
@@ -332,33 +333,103 @@ def extract_webpage_context(
     return WebPageContext(text)
 
 
+class NtfpNoEntityError(Exception):
+    &#34;&#34;&#34;Spacy&#39;s named entity recognizer failed to find an entity in a sentence.
+
+    Attributes:
+        sentence -- the sentence that lacks an entity.
+        message -- explanation of the error
+    &#34;&#34;&#34;
+
+    def __init__(self, sentence, message):
+        self.sentence = sentence
+        self.messsage = message
+
+
+def relevance(to, nlp=None, FUZZ_THRESHOLD=30, LEN_THRESHOLD=2):
+    FUZZ_THRESHOLD = FUZZ_THRESHOLD or 30
+    LEN_THRESHOLD = LEN_THRESHOLD or 2
+    # TODO: make smarter filter THRESHOLDS
+    # TODO: consider semantic similarity
+    original_question = to
+    entity_text = None
+    if isinstance(nlp, spacy.language.Language):
+        doc = nlp(original_question)
+        ents = doc.ents
+        if len(ents) &gt; 0:
+            entity = ents[0]
+            entity_text = entity.text
+            # metadata = {
+            #     &#34;entity_text&#34;: entity.text,
+            #     &#34;entity_start_char&#34;: entity.start_char,
+            #     &#34;entity_end_char&#34;: entity.end_char,
+            #     &#34;entity_label_&#34;: entity.label_,
+            # }
+            if entity_text is None or entity_text == &#34;&#34;:
+                msg = f&#34;&#39;{original_question}&#39; has no named entity from spacy?&#34;
+                raise NtfpNoEntityError(original_question, msg)
+        else:
+            msg = f&#34;&#39;{original_question}&#39; has no named entity from spacy?&#34;
+            raise NtfpNoEntityError(original_question, msg)
+
+    def _filter_func(text):
+        text_question_lexical_similarity = fuzz.ratio(text, original_question)
+        # TODO: make smarter filter rules
+        if entity_text is not None and entity_text in text:
+            # ASSUME: answer would contain exact match of entity_text
+            text_question_lexical_similarity += FUZZ_THRESHOLD
+        if original_question in text:
+            # ASSUME: that answer would not include original_question
+            return False
+        if text_question_lexical_similarity &lt; FUZZ_THRESHOLD:
+            # ASSUME: some lexical similarity question with answer
+            return False
+        if len(text) &lt; LEN_THRESHOLD:
+            # ASSUME: text is long enough to contain an answer.
+            return False
+        return True
+
+    return _filter_func
+
+
+# fmt:off
+def filter_list_by_relevance(
+    to: str,
+    lst: List[str],
+    FUZZ: Optional[int] = None,
+    LEN: Optional[int] = None,
+    nlp: Optional[object] = None,
+) -&gt; Iterator[str]:
+    relevant_text_list: Iterator[str] = filter(
+        relevance(to=to, FUZZ_THRESHOLD=FUZZ, LEN_THRESHOLD=LEN, nlp=nlp), lst,
+    )
+    return relevant_text_list
+# fmt:on
+
+
+def filter_string_by_relevance(
+    to: str,
+    string: str,
+    FUZZ: Optional[int] = None,
+    LEN: Optional[int] = None,
+    limit: Optional[int] = None,
+    sep: str = &#34;\n&#34;,
+    nlp: Optional[object] = None,
+) -&gt; str:
+    lst = string.split(sep)
+    relevant_text_list: Iterator[str] = filter_list_by_relevance(
+        to=to, lst=lst, FUZZ=FUZZ, LEN=LEN, nlp=nlp
+    )
+    return sep.join(sorted(relevant_text_list, reverse=True)[:limit])
+
+
 def extract_relevant_context(page: WebPage, question: Question) -&gt; Context:
     soup: BeautifulSoup = BeautifulSoup(markup=page, features=&#34;html.parser&#34;)
 
     txt_lst: List[str] = [x for x in soup.stripped_strings]
 
-    def relevance(to):
-        original_question = to
-
-        def filter_func(text):
-            # TODO: make smarter filter rules
-            FUZZ_THRESHOLD = 30
-            LEN_THRESHOLD = 2
-            if original_question in text:
-                # ASSUME: that answer would not include original_question
-                return False
-            if fuzz.ratio(text, original_question) &lt; FUZZ_THRESHOLD:
-                # ASSUME: some lexical similarity question with answer
-                return False
-            if len(text) &lt; LEN_THRESHOLD:
-                # ASSUME: answer is not short
-                return False
-            return True
-
-        return filter_func
-
     # Filter by relevance to the question
-    relevant_text_list: Iterator[str] = filter(relevance(to=question), txt_lst)
+    relevant_text_list = filter_list_by_relevance(to=question, lst=txt_lst)
 
     return Context(&#34;\n&#34;.join(relevant_text_list))
 
@@ -526,28 +597,8 @@ from a given <a href="ntfp_types.html#ntfp.ntfp_types.Question"><code>Question</
 
     txt_lst: List[str] = [x for x in soup.stripped_strings]
 
-    def relevance(to):
-        original_question = to
-
-        def filter_func(text):
-            # TODO: make smarter filter rules
-            FUZZ_THRESHOLD = 30
-            LEN_THRESHOLD = 2
-            if original_question in text:
-                # ASSUME: that answer would not include original_question
-                return False
-            if fuzz.ratio(text, original_question) &lt; FUZZ_THRESHOLD:
-                # ASSUME: some lexical similarity question with answer
-                return False
-            if len(text) &lt; LEN_THRESHOLD:
-                # ASSUME: answer is not short
-                return False
-            return True
-
-        return filter_func
-
     # Filter by relevance to the question
-    relevant_text_list: Iterator[str] = filter(relevance(to=question), txt_lst)
+    relevant_text_list = filter_list_by_relevance(to=question, lst=txt_lst)
 
     return Context(&#34;\n&#34;.join(relevant_text_list))</code></pre>
 </details>
@@ -701,6 +752,53 @@ from the Google Search
         yield GoogleResultURL(url)</code></pre>
 </details>
 </dd>
+<dt id="ntfp.ntfp.filter_list_by_relevance"><code class="name flex">
+<span>def <span class="ident">filter_list_by_relevance</span></span>(<span>to, lst, FUZZ=None, LEN=None, nlp=None)</span>
+</code></dt>
+<dd>
+<section class="desc"></section>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def filter_list_by_relevance(
+    to: str,
+    lst: List[str],
+    FUZZ: Optional[int] = None,
+    LEN: Optional[int] = None,
+    nlp: Optional[object] = None,
+) -&gt; Iterator[str]:
+    relevant_text_list: Iterator[str] = filter(
+        relevance(to=to, FUZZ_THRESHOLD=FUZZ, LEN_THRESHOLD=LEN, nlp=nlp), lst,
+    )
+    return relevant_text_list</code></pre>
+</details>
+</dd>
+<dt id="ntfp.ntfp.filter_string_by_relevance"><code class="name flex">
+<span>def <span class="ident">filter_string_by_relevance</span></span>(<span>to, string, FUZZ=None, LEN=None, limit=None, sep='\n', nlp=None)</span>
+</code></dt>
+<dd>
+<section class="desc"></section>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def filter_string_by_relevance(
+    to: str,
+    string: str,
+    FUZZ: Optional[int] = None,
+    LEN: Optional[int] = None,
+    limit: Optional[int] = None,
+    sep: str = &#34;\n&#34;,
+    nlp: Optional[object] = None,
+) -&gt; str:
+    lst = string.split(sep)
+    relevant_text_list: Iterator[str] = filter_list_by_relevance(
+        to=to, lst=lst, FUZZ=FUZZ, LEN=LEN, nlp=nlp
+    )
+    return sep.join(sorted(relevant_text_list, reverse=True)[:limit])</code></pre>
+</details>
+</dd>
 <dt id="ntfp.ntfp.get_context"><code class="name flex">
 <span>def <span class="ident">get_context</span></span>(<span>question, use_google=True, verbose=False)</span>
 </code></dt>
@@ -823,6 +921,61 @@ of the given <a href="ntfp_types.html#ntfp.ntfp_types.URL"><code>URL</code></a>.
     return WebPage(html)</code></pre>
 </details>
 </dd>
+<dt id="ntfp.ntfp.relevance"><code class="name flex">
+<span>def <span class="ident">relevance</span></span>(<span>to, nlp=None, FUZZ_THRESHOLD=30, LEN_THRESHOLD=2)</span>
+</code></dt>
+<dd>
+<section class="desc"></section>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def relevance(to, nlp=None, FUZZ_THRESHOLD=30, LEN_THRESHOLD=2):
+    FUZZ_THRESHOLD = FUZZ_THRESHOLD or 30
+    LEN_THRESHOLD = LEN_THRESHOLD or 2
+    # TODO: make smarter filter THRESHOLDS
+    # TODO: consider semantic similarity
+    original_question = to
+    entity_text = None
+    if isinstance(nlp, spacy.language.Language):
+        doc = nlp(original_question)
+        ents = doc.ents
+        if len(ents) &gt; 0:
+            entity = ents[0]
+            entity_text = entity.text
+            # metadata = {
+            #     &#34;entity_text&#34;: entity.text,
+            #     &#34;entity_start_char&#34;: entity.start_char,
+            #     &#34;entity_end_char&#34;: entity.end_char,
+            #     &#34;entity_label_&#34;: entity.label_,
+            # }
+            if entity_text is None or entity_text == &#34;&#34;:
+                msg = f&#34;&#39;{original_question}&#39; has no named entity from spacy?&#34;
+                raise NtfpNoEntityError(original_question, msg)
+        else:
+            msg = f&#34;&#39;{original_question}&#39; has no named entity from spacy?&#34;
+            raise NtfpNoEntityError(original_question, msg)
+
+    def _filter_func(text):
+        text_question_lexical_similarity = fuzz.ratio(text, original_question)
+        # TODO: make smarter filter rules
+        if entity_text is not None and entity_text in text:
+            # ASSUME: answer would contain exact match of entity_text
+            text_question_lexical_similarity += FUZZ_THRESHOLD
+        if original_question in text:
+            # ASSUME: that answer would not include original_question
+            return False
+        if text_question_lexical_similarity &lt; FUZZ_THRESHOLD:
+            # ASSUME: some lexical similarity question with answer
+            return False
+        if len(text) &lt; LEN_THRESHOLD:
+            # ASSUME: text is long enough to contain an answer.
+            return False
+        return True
+
+    return _filter_func</code></pre>
+</details>
+</dd>
 <dt id="ntfp.ntfp.transformer"><code class="name flex">
 <span>def <span class="ident">transformer</span></span>(<span>q, c)</span>
 </code></dt>
@@ -936,6 +1089,40 @@ and special characters into their appropriate codes.</p></section>
 </dl>
 </section>
 <section>
+<h2 class="section-title" id="header-classes">Classes</h2>
+<dl>
+<dt id="ntfp.ntfp.NtfpNoEntityError"><code class="flex name class">
+<span>class <span class="ident">NtfpNoEntityError</span></span>
+<span>(</span><span>sentence, message)</span>
+</code></dt>
+<dd>
+<section class="desc"><p>Spacy's named entity recognizer failed to find an entity in a sentence.</p>
+<h2 id="attributes">Attributes</h2>
+<p>sentence &ndash; the sentence that lacks an entity.
+message &ndash; explanation of the error</p></section>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">class NtfpNoEntityError(Exception):
+    &#34;&#34;&#34;Spacy&#39;s named entity recognizer failed to find an entity in a sentence.
+
+    Attributes:
+        sentence -- the sentence that lacks an entity.
+        message -- explanation of the error
+    &#34;&#34;&#34;
+
+    def __init__(self, sentence, message):
+        self.sentence = sentence
+        self.messsage = message</code></pre>
+</details>
+<h3>Ancestors</h3>
+<ul class="hlist">
+<li>builtins.Exception</li>
+<li>builtins.BaseException</li>
+</ul>
+</dd>
+</dl>
 </section>
 </article>
 <nav id="sidebar">
@@ -955,11 +1142,21 @@ and special characters into their appropriate codes.</p></section>
 <li><code><a title="ntfp.ntfp.extract_relevant_context" href="#ntfp.ntfp.extract_relevant_context">extract_relevant_context</a></code></li>
 <li><code><a title="ntfp.ntfp.extract_webpage_context" href="#ntfp.ntfp.extract_webpage_context">extract_webpage_context</a></code></li>
 <li><code><a title="ntfp.ntfp.fetch_google_result_urls" href="#ntfp.ntfp.fetch_google_result_urls">fetch_google_result_urls</a></code></li>
+<li><code><a title="ntfp.ntfp.filter_list_by_relevance" href="#ntfp.ntfp.filter_list_by_relevance">filter_list_by_relevance</a></code></li>
+<li><code><a title="ntfp.ntfp.filter_string_by_relevance" href="#ntfp.ntfp.filter_string_by_relevance">filter_string_by_relevance</a></code></li>
 <li><code><a title="ntfp.ntfp.get_context" href="#ntfp.ntfp.get_context">get_context</a></code></li>
 <li><code><a title="ntfp.ntfp.get_google_page" href="#ntfp.ntfp.get_google_page">get_google_page</a></code></li>
 <li><code><a title="ntfp.ntfp.get_page" href="#ntfp.ntfp.get_page">get_page</a></code></li>
+<li><code><a title="ntfp.ntfp.relevance" href="#ntfp.ntfp.relevance">relevance</a></code></li>
 <li><code><a title="ntfp.ntfp.transformer" href="#ntfp.ntfp.transformer">transformer</a></code></li>
 <li><code><a title="ntfp.ntfp.url_param_sanitize" href="#ntfp.ntfp.url_param_sanitize">url_param_sanitize</a></code></li>
+</ul>
+</li>
+<li><h3><a href="#header-classes">Classes</a></h3>
+<ul>
+<li>
+<h4><code><a title="ntfp.ntfp.NtfpNoEntityError" href="#ntfp.ntfp.NtfpNoEntityError">NtfpNoEntityError</a></code></h4>
+</li>
 </ul>
 </li>
 </ul>
